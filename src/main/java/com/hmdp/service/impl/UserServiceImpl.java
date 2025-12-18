@@ -1,6 +1,8 @@
 package com.hmdp.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.bean.copier.CopyOptions;
+import cn.hutool.core.lang.UUID;
 import cn.hutool.core.util.RandomUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.LoginFormDTO;
@@ -18,6 +20,11 @@ import org.springframework.stereotype.Service;
 import javax.annotation.Resource;
 import javax.servlet.http.HttpSession;
 
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+
+import static com.hmdp.utils.RedisConstants.*;
 import static com.hmdp.utils.SystemConstants.USER_NICK_NAME_PREFIX;
 
 /**
@@ -44,7 +51,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
 
         String code = RandomUtil.randomNumbers(6);
 
-        session.setAttribute("code",code);
+//        session.setAttribute("code",code);
+        stringRedisTemplate.opsForValue().set(LOGIN_CODE_KEY + phone,code,LOGIN_CODE_TTL , TimeUnit.MINUTES);
 
         //使用阿里云发送验证码，有点麻烦个人申请备案，直接日志
         log.info("短信发送成功：{}",code);
@@ -59,10 +67,11 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             return Result.fail("请输入正确手机号码");
         }
 
-        Object cacheCode = session.getAttribute("code");
+//        Object cacheCode = session.getAttribute("code");
+        String cacheCode = stringRedisTemplate.opsForValue().get(LOGIN_CODE_KEY + phone);
         String code = loginForm.getCode();
 
-        if(code != null && !cacheCode.toString().equals(code)){
+        if(cacheCode == null || !cacheCode.equals(code)){
             return Result.fail("验证码出错");
         }
 
@@ -71,7 +80,22 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             user = creatUserWithPhone(phone);
         }
 
-        session.setAttribute("user", BeanUtil.copyProperties(user, UserDTO.class));
+//         session.setAttribute("user", BeanUtil.copyProperties(user, UserDTO.class));
+        String token = UUID.randomUUID().toString(true);
+        UserDTO userDTO  =  BeanUtil.copyProperties(user, UserDTO.class);
+        Map<String, Object> userMap = BeanUtil.beanToMap(
+                userDTO,
+                new HashMap<>(),
+                CopyOptions.create()
+                        .setIgnoreNullValue(true)//忽略空值
+                        .setFieldValueEditor((fieldName, fieldValue) -> fieldValue.toString())
+
+        );
+
+        String tokenKey = LOGIN_USER_KEY + token;
+        stringRedisTemplate.opsForHash().putAll(tokenKey,userMap);
+        stringRedisTemplate.expire(tokenKey, LOGIN_USER_TTL,TimeUnit.SECONDS);
+
         return Result.ok();
     }
 
