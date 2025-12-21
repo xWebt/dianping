@@ -94,9 +94,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
 
         String tokenKey = LOGIN_USER_KEY + token;
         stringRedisTemplate.opsForHash().putAll(tokenKey,userMap);
-        stringRedisTemplate.expire(tokenKey, LOGIN_USER_TTL,TimeUnit.SECONDS);
+        stringRedisTemplate.expire(tokenKey, LOGIN_USER_TTL,TimeUnit.MINUTES);
 
-        return Result.ok();
+        return Result.ok(token);
     }
 
     private User creatUserWithPhone(String phone) {
