@@ -1,5 +1,6 @@
 package com.hmdp.service.impl;
 
+import cn.hutool.core.util.BooleanUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
 import com.hmdp.dto.Result;
@@ -11,6 +12,7 @@ import com.hmdp.utils.RedisConstants;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.servlet.config.annotation.InterceptorRegistration;
 
 import javax.annotation.Resource;
 import java.util.concurrent.TimeUnit;
@@ -32,17 +34,74 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
     @Override
     public Result queryById(Long id) {
+        //缓存穿透
+        // Shop shop = queryWithPassThrough(id)
+
+        //互斥锁解决缓存击穿
+        Shop shop = queryWithMutex(id);
+        if (shop == null) {
+            return Result.fail("店铺不存在");
+        }
+        return Result.ok(shop);
+    }
+
+    public Shop queryWithMutex(Long id) {
         String  key  = RedisConstants.CACHE_SHOP_KEY + id;
         String string = stringRedisTemplate.opsForValue().get(key);
 
         if(StrUtil.isNotBlank(string)){
-            Shop bean = JSONUtil.toBean(string, Shop.class);
-            return Result.ok(bean);
-          }
+            return JSONUtil.toBean(string, Shop.class);
+        }
 
         if(string == null){
             //isNotBlank在null情况下也是false，防止再查数据库
-            return Result.fail("店铺不存在");
+            return null;
+        }
+
+        //实现缓存重建
+
+
+        String lockKey = RedisConstants.LOCK_SHOP_KEY + id;
+        Shop shop = null;
+        try {
+            boolean isLock = tryLock(lockKey);
+
+            if (!isLock) {
+                Thread.sleep(50);
+                return queryWithMutex(id);
+            }
+            //查数据库
+             shop = getById(id);
+
+            if (shop == null) {
+                //写空值避免缓存穿透
+                stringRedisTemplate.opsForValue().set(key, "", RedisConstants.CACHE_NULL_TTL, TimeUnit.MINUTES);
+
+                return null;
+            }
+
+            stringRedisTemplate.opsForValue().set(key, JSONUtil.toJsonStr(shop), RedisConstants.CACHE_SHOP_TTL, TimeUnit.MINUTES);
+        }catch(InterruptedException e){
+            throw new RuntimeException(e);
+        }
+        finally{
+            //释放锁
+            unlock(lockKey);
+        }
+        return shop;
+    }
+
+    public Shop queryWithPassThrough(Long id) {
+        String  key  = RedisConstants.CACHE_SHOP_KEY + id;
+        String string = stringRedisTemplate.opsForValue().get(key);
+
+        if(StrUtil.isNotBlank(string)){
+            return JSONUtil.toBean(string, Shop.class);
+        }
+
+        if(string == null){
+            //isNotBlank在null情况下也是false，防止再查数据库
+            return null;
         }
 
         //查数据库
@@ -52,11 +111,20 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
             //写空值避免缓存穿透
             stringRedisTemplate.opsForValue().set(key,"",RedisConstants.CACHE_NULL_TTL, TimeUnit.MINUTES);
 
-            return Result.fail("店铺不存在");
+            return null;
         }
         stringRedisTemplate.opsForValue().set(key, JSONUtil.toJsonStr(byId),RedisConstants.CACHE_SHOP_TTL, TimeUnit.MINUTES);
 
-        return Result.ok(byId);
+        return byId;
+    }
+
+    private boolean tryLock(String key){
+        Boolean flag = stringRedisTemplate.opsForValue().setIfAbsent(key, "1", 10, TimeUnit.SECONDS);
+        return BooleanUtil.isTrue(flag);
+    }
+
+    private void unlock(String key){
+        stringRedisTemplate.delete(key);
     }
 
     @Override
